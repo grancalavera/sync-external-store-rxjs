@@ -6,3 +6,14 @@
   padding: 1em;
   min-width: 200px;
 }
+
+.inline {
+  position: relative;
+  display: inline-block;
+}
+
+.closeButton {
+  position: absolute;
+  top: 0;
+  right: 0;
+}
