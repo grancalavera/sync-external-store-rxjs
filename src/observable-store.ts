@@ -14,10 +14,6 @@ export const createObservableStore = <T>(source$: Observable<T>) => {
   const subscribers = new Set<Notifier>();
   const suspender = createSuspender();
 
-  const flush = () => {
-    state = { kind: "empty" };
-  };
-
   const set = (value: T) => {
     state = { kind: "value", value };
   };
@@ -45,18 +41,22 @@ export const createObservableStore = <T>(source$: Observable<T>) => {
     subscribers.add(notifier);
     return () => {
       subscribers.delete(notifier);
+      console.log("unsubscribe");
       releaseSubscription();
     };
   };
 
   const retainSubscription = () => {
     if (subscription === undefined && subscribers.size === 0) {
-      flush();
       subscription = source$.subscribe({
         next: (value) => {
           set(value);
           if (suspender.isSuspended()) {
             suspender.resume();
+          }
+
+          if (subscribers.size === 0) {
+            releaseSubscription();
           } else {
             subscribers.forEach((notify) => notify());
           }
@@ -73,7 +73,6 @@ export const createObservableStore = <T>(source$: Observable<T>) => {
     if (subscription && subscribers.size === 0) {
       subscription.unsubscribe();
       subscription = undefined;
-      flush();
     }
   };
 
