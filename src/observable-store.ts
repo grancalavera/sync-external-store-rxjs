@@ -7,6 +7,34 @@ type HasError = { kind: "error"; error: unknown };
 type Empty = { kind: "empty" };
 type HasValue<T> = { kind: "value"; value: T };
 
+/*
+- El problema es que releaseSubscription solo se llama en el teardown del store.subscribe.
+- React puede llamar al store.getSnapshot y no llegar nunca a llamar el store.subscribe.
+- Esto pasa cuando hay suspense por el medio...
+- Imaginate un componente que:
+  - antes de que se monte,
+  - hace un trigger de Suspense
+  - y antes de que Suspense resuelva,
+  - el usuario pulsa un botón que hace que este componente “se desmonte”
+  - (que no se desmonta porque nunca se ha montado en primer lugar)
+  - React va a descartar ese componente sin que releaseSubscription se llame
+  - getSnapshot no puede crear subscripciones
+  - al final [...] queda una subscripcion abierta sin que haya ningun componente que la esté referenciando
+
+- The problem is that releaseSubscription is only called in the teardown of store.subscribe.
+- React can call store.getSnapshot and never reach store.subscribe.
+- This happens when there is suspense in between...
+- Imagine a component that:
+  - before it mounts,
+  - triggers Suspense,
+  - and before Suspense resolves,
+  - the user clicks a button that causes this component to "unmount"
+  - (which doesn't actually unmount because it was never mounted in the first place)
+  - React will discard that component without calling releaseSubscription
+  - getSnapshot cannot create subscriptions
+  - in the end [...] there is an open subscription without any component referencing it
+*/
+
 export const createObservableStore = <T>(source$: Observable<T>) => {
   let state: State<T> = { kind: "empty" };
   let subscription: Subscription | undefined;
@@ -41,7 +69,6 @@ export const createObservableStore = <T>(source$: Observable<T>) => {
     subscribers.add(notifier);
     return () => {
       subscribers.delete(notifier);
-      console.log("unsubscribe");
       releaseSubscription();
     };
   };
@@ -57,9 +84,10 @@ export const createObservableStore = <T>(source$: Observable<T>) => {
 
           if (subscribers.size === 0) {
             releaseSubscription();
-          } else {
-            subscribers.forEach((notify) => notify());
+            return;
           }
+
+          subscribers.forEach((notify) => notify());
         },
         error: (error) => {
           fail(error);

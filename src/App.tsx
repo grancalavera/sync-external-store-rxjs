@@ -5,7 +5,15 @@ import React, {
   useState,
   useSyncExternalStore,
 } from "react";
-import { BehaviorSubject, Subject, map, merge, scan, shareReplay } from "rxjs";
+import {
+  BehaviorSubject,
+  Observable,
+  Subject,
+  map,
+  merge,
+  scan,
+  shareReplay,
+} from "rxjs";
 import styles from "./main.module.css";
 import { createObservableStore } from "./observable-store";
 
@@ -18,7 +26,7 @@ const reset = () => reset$.next();
 const boom$ = new Subject<void>();
 const boom = () => boom$.next();
 
-const count$ = merge(
+const count$: Observable<number> = merge(
   reset$.pipe(map(() => "reset" as const)),
   increment$.pipe(map(() => "increment" as const)),
   boom$.pipe(map(() => "boom" as const))
