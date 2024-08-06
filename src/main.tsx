@@ -1,10 +1,10 @@
 import "modern-normalize/modern-normalize.css";
 import { StrictMode } from "react";
 import ReactDOM from "react-dom/client";
-import { Sketch01 } from "./Sketch01";
+import { Sketch02 } from "./Sketch02";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <Sketch01 />
+    <Sketch02 />
   </StrictMode>
 );

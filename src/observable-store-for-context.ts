@@ -1,4 +1,4 @@
-import { Observable, Subscription } from "rxjs";
+import { Observable, shareReplay, Subscription, tap } from "rxjs";
 import { createSuspender } from "./suspender";
 
 type Notifier = () => void;
@@ -38,12 +38,24 @@ type HasValue<T> = { kind: "value"; value: T };
   - in the end [...] there is an open subscription without any component referencing it
 */
 
-export const createObservableStore = <T>(source$: Observable<T>) => {
+export const createObservableStore = <T>(
+  source$: Observable<T>,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  capture: (source$: Observable<unknown>) => void
+) => {
+  let captured = false;
   let state: State<T> = { kind: "empty" };
   let subscription: Subscription | undefined;
 
   const subscribers = new Set<Notifier>();
   const suspender = createSuspender();
+
+  const leakySource$ = source$.pipe(
+    tap((value) => {
+      state = { kind: "value", value };
+    }),
+    shareReplay({ bufferSize: 1, refCount: true })
+  );
 
   const set = (value: T) => {
     state = { kind: "value", value };
@@ -54,7 +66,11 @@ export const createObservableStore = <T>(source$: Observable<T>) => {
   };
 
   const getSnapshot = (): T => {
-    retainSubscription();
+    if (!captured) {
+      captured = true;
+      capture(leakySource$);
+      throw suspender.suspend();
+    }
 
     if (state.kind === "empty") {
       throw suspender.suspend();
@@ -68,9 +84,18 @@ export const createObservableStore = <T>(source$: Observable<T>) => {
   };
 
   const subscribe = (notifier: Notifier) => {
+    const localSubscription = source$.subscribe();
+
+    if (subscription) {
+      subscription.unsubscribe();
+      subscription = undefined;
+    }
+
     retainSubscription();
     subscribers.add(notifier);
+
     return () => {
+      localSubscription.unsubscribe();
       subscribers.delete(notifier);
       releaseSubscription();
     };
@@ -78,7 +103,7 @@ export const createObservableStore = <T>(source$: Observable<T>) => {
 
   const retainSubscription = () => {
     if (subscription === undefined && subscribers.size === 0) {
-      subscription = source$.subscribe({
+      subscription = leakySource$.subscribe({
         next: (value) => {
           set(value);
           if (suspender.isSuspended()) {
