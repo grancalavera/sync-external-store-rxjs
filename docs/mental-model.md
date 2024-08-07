@@ -1,4 +1,4 @@
-# Mental Model
+# Mental Model: Capture
 
 ```mermaid
 stateDiagram-v2
