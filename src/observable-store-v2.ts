@@ -91,6 +91,8 @@ export const createObservableStore = <T>(
 
   const subscribe = (notifier: Notifier) => {
     retainSubscription();
+    suspendedSubscription?.unsubscribe();
+    suspendedSubscription = undefined;
     subscribers.add(notifier);
     return () => {
       subscribers.delete(notifier);
@@ -103,26 +105,6 @@ export const createObservableStore = <T>(
       retainedSubscription = multicastSource$.subscribe({
         next: (value) => {
           set(value);
-
-          // the first time source$ emits a value after we suspended
-          // we will always have 0 subscribers because the component
-          // that triggered the getSnapshot will not be mounted yet.
-          //
-          // but if the component was discarded by React before it was mounted
-          // we will have 0 subscribers and we will not call releaseSubscription
-          // until source$ emits a value again, which could be never.
-          //
-          // if the source$ emits again we will have 0 subscribers and we will
-          // call releaseSubscription and unsubscribe from source$.
-          if (!suspender.isSuspended() && subscribers.size === 0) {
-            releaseSubscription();
-            return;
-          }
-
-          if (suspender.isSuspended()) {
-            suspender.resume();
-          }
-
           subscribers.forEach((notify) => notify());
         },
         error: (error) => {
@@ -138,7 +120,7 @@ export const createObservableStore = <T>(
     if (retainedSubscription && subscribers.size === 0) {
       retainedSubscription.unsubscribe();
       retainedSubscription = undefined;
-      state = { kind: "empty" };
+      reset();
     }
   };
 
