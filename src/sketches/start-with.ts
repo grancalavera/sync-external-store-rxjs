@@ -1,5 +1,6 @@
 import {
   delay,
+  map,
   materialize,
   merge,
   Observable,
@@ -24,6 +25,16 @@ const factory = <T>(source$: Observable<T>) => {
   );
 };
 
-factory(of(1)).subscribe(console.log);
-console.log("----");
-factory(of(1).pipe(delay(1))).subscribe(console.log);
+factory(
+  of(1, 2, 3).pipe(
+    map((x) => {
+      if (x === 2) {
+        throw new Error("BOOM!");
+      }
+      return x;
+    })
+  )
+).subscribe(console.log);
+
+// console.log("----");
+// factory(of(1).pipe(delay(1))).subscribe(console.log);
