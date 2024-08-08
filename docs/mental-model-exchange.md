@@ -5,7 +5,7 @@
 Any state of the following form performs a side effect as the initial transition
 when entering such state:
 
-```mermaid 
+```mermaid
 stateDiagram-v2
 
 state State {

@@ -1,4 +1,4 @@
-import { Observable, shareReplay, Subscription, tap } from "rxjs";
+import { Observable, shareReplay, Subscription } from "rxjs";
 import { createSuspender } from "./suspender";
 
 type Notifier = () => void;
@@ -40,22 +40,18 @@ type HasValue<T> = { kind: "value"; value: T };
 
 export const createObservableStore = <T>(
   source$: Observable<T>,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  capture: (source$: Observable<unknown>) => void
+  capture: (subscription: Subscription) => void
 ) => {
-  let captured = false;
   let state: State<T> = { kind: "empty" };
-  let subscription: Subscription | undefined;
 
-  const subscribers = new Set<Notifier>();
-  const suspender = createSuspender();
+  let suspendedSubscription: Subscription | undefined;
+  let retainedSubscription: Subscription | undefined;
 
-  const leakySource$ = source$.pipe(
-    tap((value) => {
-      state = { kind: "value", value };
-    }),
+  const multicastSource$ = source$.pipe(
     shareReplay({ bufferSize: 1, refCount: true })
   );
+  const subscribers = new Set<Notifier>();
+  const suspender = createSuspender();
 
   const set = (value: T) => {
     state = { kind: "value", value };
@@ -65,14 +61,24 @@ export const createObservableStore = <T>(
     state = { kind: "error", error };
   };
 
+  const reset = () => {
+    state = { kind: "empty" };
+  };
+
   const getSnapshot = (): T => {
-    if (!captured) {
-      captured = true;
-      capture(leakySource$);
-      throw suspender.suspend();
-    }
+    console.log("* getSnapshot", Date.now());
 
     if (state.kind === "empty") {
+      suspendedSubscription = multicastSource$.subscribe({
+        next: (value) => {
+          set(value);
+          suspender.resume();
+        },
+        error: (error) => {
+          fail(error);
+        },
+      });
+      capture(suspendedSubscription);
       throw suspender.suspend();
     }
 
@@ -84,35 +90,37 @@ export const createObservableStore = <T>(
   };
 
   const subscribe = (notifier: Notifier) => {
-    const localSubscription = source$.subscribe();
-
-    if (subscription) {
-      subscription.unsubscribe();
-      subscription = undefined;
-    }
-
     retainSubscription();
     subscribers.add(notifier);
-
     return () => {
-      localSubscription.unsubscribe();
       subscribers.delete(notifier);
       releaseSubscription();
     };
   };
 
   const retainSubscription = () => {
-    if (subscription === undefined && subscribers.size === 0) {
-      subscription = leakySource$.subscribe({
+    if (retainedSubscription === undefined && subscribers.size === 0) {
+      retainedSubscription = multicastSource$.subscribe({
         next: (value) => {
           set(value);
-          if (suspender.isSuspended()) {
-            suspender.resume();
-          }
 
-          if (subscribers.size === 0) {
+          // the first time source$ emits a value after we suspended
+          // we will always have 0 subscribers because the component
+          // that triggered the getSnapshot will not be mounted yet.
+          //
+          // but if the component was discarded by React before it was mounted
+          // we will have 0 subscribers and we will not call releaseSubscription
+          // until source$ emits a value again, which could be never.
+          //
+          // if the source$ emits again we will have 0 subscribers and we will
+          // call releaseSubscription and unsubscribe from source$.
+          if (!suspender.isSuspended() && subscribers.size === 0) {
             releaseSubscription();
             return;
+          }
+
+          if (suspender.isSuspended()) {
+            suspender.resume();
           }
 
           subscribers.forEach((notify) => notify());
@@ -126,9 +134,11 @@ export const createObservableStore = <T>(
   };
 
   const releaseSubscription = () => {
-    if (subscription && subscribers.size === 0) {
-      subscription.unsubscribe();
-      subscription = undefined;
+    console.log("** releaseSubscription", Date.now());
+    if (retainedSubscription && subscribers.size === 0) {
+      retainedSubscription.unsubscribe();
+      retainedSubscription = undefined;
+      state = { kind: "empty" };
     }
   };
 
