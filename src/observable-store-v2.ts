@@ -1,6 +1,10 @@
 import { Observable, shareReplay, Subscription } from "rxjs";
 import { createSuspender } from "./suspender";
 
+export type ObservableStore<T> = {
+  getSnapshot: () => T;
+  subscribe: (notifier: Notifier) => () => void;
+};
 type Notifier = () => void;
 type State<T> = HasError | Empty | HasValue<T>;
 type HasError = { kind: "error"; error: unknown };
@@ -41,7 +45,7 @@ type HasValue<T> = { kind: "value"; value: T };
 export const createObservableStore = <T>(
   source$: Observable<T>,
   capture: (subscription: Subscription) => void
-) => {
+): ObservableStore<T> => {
   let state: State<T> = { kind: "empty" };
 
   let suspendedSubscription: Subscription | undefined;
@@ -66,7 +70,7 @@ export const createObservableStore = <T>(
   };
 
   const getSnapshot = (): T => {
-    console.log("* getSnapshot", Date.now());
+    console.log("** getSnapshot", Date.now());
 
     if (state.kind === "empty") {
       suspendedSubscription = multicastSource$.subscribe({
