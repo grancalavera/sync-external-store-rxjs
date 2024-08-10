@@ -1,5 +1,10 @@
 import { Suspense } from "react";
 
+type Result<T> = Pending | Success<T> | Failure;
+type Pending = { kind: "pending" };
+type Success<T> = { kind: "success"; value: T };
+type Failure = { kind: "failure"; error: unknown };
+
 type BlogPost = {
   userId: number;
   id: number;
@@ -17,25 +22,24 @@ const fetchData = async (): Promise<BlogPost[]> => {
 
 const resource = {
   read: (() => {
-    let result: BlogPost[];
-    let error: unknown;
+    let result: Result<BlogPost[]> = { kind: "pending" };
 
     const promise = fetchData()
       .then((res) => {
-        result = res;
+        result = { kind: "success", value: res };
       })
       .catch((err) => {
-        error = err;
+        result = { kind: "failure", error: err };
       });
 
     return () => {
-      if (!result && !error) {
+      if (result.kind === "pending") {
         throw promise;
-      } else if (error) {
-        throw error;
+      } else if (result.kind === "failure") {
+        throw result.error;
       }
 
-      return result;
+      return result.value;
     };
   })(),
 };
