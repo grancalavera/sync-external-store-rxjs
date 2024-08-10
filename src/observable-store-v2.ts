@@ -70,7 +70,7 @@ export const createObservableStore = <T>(
   };
 
   const getSnapshot = (): T => {
-    console.log("** getSnapshot", Date.now());
+    console.log("** getSnapshot at", Date.now());
 
     if (state.kind === "empty") {
       suspendedSubscription = multicastSource$.subscribe({
