@@ -2,7 +2,10 @@ import { CSSProperties, memo, Suspense, useSyncExternalStore } from "react";
 import { ErrorBoundary, FallbackProps } from "react-error-boundary";
 import {
   BehaviorSubject,
+  combineLatest,
+  dematerialize,
   firstValueFrom,
+  map,
   Observable,
   ObservableNotification,
   shareReplay,
@@ -52,7 +55,9 @@ function materializeAndRetry<T>() {
     });
 }
 // https://react.dev/reference/react/useSyncExternalStore
-const createObservableStore = <T,>(source$: Observable<T>) => {
+const createObservableStore = <T,>(
+  source$: Observable<T>
+): [() => T, Observable<T>] => {
   const notifiers = new Set<() => void>();
 
   const sharedSource$ = source$.pipe(
@@ -126,16 +131,18 @@ const createObservableStore = <T,>(source$: Observable<T>) => {
     };
   };
 
-  return () => useSyncExternalStore(subscribe, getSnapshot);
+  return [
+    () => useSyncExternalStore(subscribe, getSnapshot),
+    sharedSource$.pipe(dematerialize()),
+  ];
 };
 
 const selectedPostId$ = new BehaviorSubject(1);
-const hasPostError$ = new BehaviorSubject(false);
+const postError$ = new BehaviorSubject(false);
 
-const useSelectedPostId = createObservableStore(selectedPostId$);
-const useHasPostError = createObservableStore(hasPostError$);
-
-const usePost = createObservableStore(
+const [useSelectedPostId, selected$] = createObservableStore(selectedPostId$);
+const [usePostError, error$] = createObservableStore(postError$);
+const [usePost, post$] = createObservableStore(
   selectedPostId$.pipe(
     switchMap((id) => {
       if (![1, 2, 3].includes(id)) {
@@ -149,6 +156,16 @@ const usePost = createObservableStore(
         },
       });
     })
+  )
+);
+const [useStatus] = createObservableStore(
+  combineLatest([selected$, error$, post$]).pipe(
+    map(([selected, error, post]) => ({ selected, error, post }))
+    // catchError((error, caught$) => {
+    //   const message =
+    //     error instanceof Error ? error.message : "An error occurred";
+    //   return concat(of({ error: message }), caught$);
+    // })
   )
 );
 
@@ -184,7 +201,7 @@ const Row = ({
 
 const SelectPost = () => {
   const selectedPostId = useSelectedPostId();
-  const hasPostError = useHasPostError();
+  const hasPostError = usePostError();
   return (
     <Row style={{ backgroundColor: "lightgray" }}>
       <Suspense>
@@ -238,6 +255,25 @@ const InvalidPostId = (props: FallbackProps) => {
   );
 };
 
+const UnknownError = () => (
+  <div
+    style={{
+      display: "flex",
+      justifyContent: "center",
+      alignItems: "center",
+      width: "100%",
+      fontSize: 100,
+    }}
+  >
+    🥴
+  </div>
+);
+
+const Status = () => {
+  const status = useStatus();
+  return <pre>{JSON.stringify(status, null, 2)}</pre>;
+};
+
 const Controls = () => (
   <Suspense fallback={<div>Loading...</div>}>
     <SelectPost />
@@ -245,18 +281,28 @@ const Controls = () => (
 );
 
 const Post = () => (
-  <Suspense fallback={<div>Loading...</div>}>
-    <ErrorBoundary
-      FallbackComponent={InvalidPostId}
-      onReset={() => {
-        hasPostError$.next(false);
-        selectedPostId$.next(1);
-      }}
-      onError={() => hasPostError$.next(true)}
-    >
+  <ErrorBoundary
+    FallbackComponent={InvalidPostId}
+    onReset={() => {
+      postError$.next(false);
+      selectedPostId$.next(1);
+    }}
+    onError={() => postError$.next(true)}
+  >
+    <Suspense fallback={<div>Loading...</div>}>
       <LoadPost />
+    </Suspense>
+  </ErrorBoundary>
+);
+
+const Footer = () => (
+  <Row style={{ backgroundColor: "lightblue" }}>
+    <ErrorBoundary FallbackComponent={UnknownError}>
+      <Suspense fallback={<div>Loading...</div>}>
+        <Status />
+      </Suspense>
     </ErrorBoundary>
-  </Suspense>
+  </Row>
 );
 
 const App = () => {
@@ -265,6 +311,7 @@ const App = () => {
       <h1>Example 10</h1>
       <Controls />
       <Post />
+      <Footer />
     </div>
   );
 };
