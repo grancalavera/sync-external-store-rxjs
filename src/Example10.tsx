@@ -1,14 +1,15 @@
-import { Suspense, useSyncExternalStore } from "react";
+import { CSSProperties, memo, Suspense, useSyncExternalStore } from "react";
+import { ErrorBoundary, FallbackProps } from "react-error-boundary";
 import {
   BehaviorSubject,
   firstValueFrom,
   Observable,
+  ObservableNotification,
   shareReplay,
   Subscription,
   switchMap,
 } from "rxjs";
 import { fromFetch } from "rxjs/fetch";
-import { ErrorBoundary } from "react-error-boundary";
 
 type Result<T> = Pending | Success<T> | Failure;
 
@@ -23,28 +24,39 @@ type BlogPost = {
   body: string;
 };
 
-const selectedPostId$ = new BehaviorSubject(1);
+function materializeAndRetry<T>() {
+  return (source$: Observable<T>): Observable<ObservableNotification<T>> =>
+    new Observable<ObservableNotification<T>>((observer) => {
+      const subscription = new Subscription();
 
-const data$ = selectedPostId$.pipe(
-  switchMap((id) => {
-    if (![1, 2, 3].includes(id)) {
-      throw new Error("Invalid post ID");
-    }
+      const subscribeToSource = () => {
+        const sub = source$.subscribe({
+          next(value: T) {
+            observer.next({ kind: "N", value });
+          },
+          error(error) {
+            observer.next({ kind: "E", error });
+            subscribeToSource();
+          },
+          complete() {
+            observer.next({ kind: "C" });
+            observer.complete();
+          },
+        });
+        subscription.add(sub);
+      };
 
-    return fromFetch(`https://jsonplaceholder.typicode.com/posts/${id}`, {
-      selector: async (response) => {
-        const post = await response.json();
-        return post as BlogPost;
-      },
+      subscribeToSource();
+
+      return () => subscription.unsubscribe();
     });
-  })
-);
-
+}
 // https://react.dev/reference/react/useSyncExternalStore
 const createObservableStore = <T,>(source$: Observable<T>) => {
   const notifiers = new Set<() => void>();
 
   const sharedSource$ = source$.pipe(
+    materializeAndRetry(),
     shareReplay({ bufferSize: 1, refCount: true })
   );
 
@@ -54,13 +66,17 @@ const createObservableStore = <T,>(source$: Observable<T>) => {
 
   const getSnapshot = () => {
     if (!promise) {
-      promise = firstValueFrom(sharedSource$)
-        .then((res) => {
-          result = { kind: "success", value: res };
-        })
-        .catch((err) => {
-          result = { kind: "failure", error: err };
-        });
+      result = { kind: "pending" };
+
+      promise = firstValueFrom(sharedSource$).then((res) => {
+        if (res.kind === "N") {
+          result = { kind: "success", value: res.value };
+        }
+
+        if (res.kind === "E") {
+          result = { kind: "failure", error: res.error };
+        }
+      });
     }
 
     if (result.kind === "pending") {
@@ -68,6 +84,13 @@ const createObservableStore = <T,>(source$: Observable<T>) => {
     }
 
     if (result.kind === "failure") {
+      // Immediately before throwing, clear the notifiers and unsubscribe from the source
+      // wait for the next render to resubscribe, but do not delete the promise yet because
+      // otherwise the component will suspend again on the next `getSnapshot` call, which
+      // will happen synchronously before the component is unmounted by the error boundary.
+      notifiers.clear();
+      subscription?.unsubscribe();
+      subscription = undefined;
       throw result.error;
     }
 
@@ -80,12 +103,15 @@ const createObservableStore = <T,>(source$: Observable<T>) => {
     if (subscription === undefined) {
       subscription = sharedSource$.subscribe({
         next: (value) => {
-          result = { kind: "success", value };
+          if (value.kind === "N") {
+            result = { kind: "success", value: value.value };
+          }
+
+          if (value.kind === "E") {
+            result = { kind: "failure", error: value.error };
+          }
+
           notifiers.forEach((notify) => notify());
-        },
-        error: (err) => {
-          result = { kind: "failure", error: err };
-          notifier();
         },
       });
     }
@@ -95,6 +121,7 @@ const createObservableStore = <T,>(source$: Observable<T>) => {
       if (notifiers.size === 0) {
         subscription?.unsubscribe();
         subscription = undefined;
+        promise = undefined;
       }
     };
   };
@@ -102,10 +129,30 @@ const createObservableStore = <T,>(source$: Observable<T>) => {
   return () => useSyncExternalStore(subscribe, getSnapshot);
 };
 
-const useSelectedPostId = createObservableStore(selectedPostId$);
-const usePost = createObservableStore(data$);
+const selectedPostId$ = new BehaviorSubject(1);
+const hasPostError$ = new BehaviorSubject(false);
 
-const Post = () => {
+const useSelectedPostId = createObservableStore(selectedPostId$);
+const useHasPostError = createObservableStore(hasPostError$);
+
+const usePost = createObservableStore(
+  selectedPostId$.pipe(
+    switchMap((id) => {
+      if (![1, 2, 3].includes(id)) {
+        throw new Error("Invalid post ID: " + id);
+      }
+
+      return fromFetch(`https://jsonplaceholder.typicode.com/posts/${id}`, {
+        selector: async (response) => {
+          const post = await response.json();
+          return post as BlogPost;
+        },
+      });
+    })
+  )
+);
+
+const LoadPost = () => {
   const post = usePost();
   return (
     <div style={{ padding: 5 }}>
@@ -115,63 +162,109 @@ const Post = () => {
   );
 };
 
-const Row = ({ children }: { children: React.ReactNode }) => (
+const Row = ({
+  children,
+  style,
+}: {
+  children: React.ReactNode;
+  style?: CSSProperties;
+}) => (
   <div
     style={{
+      ...style,
       display: "flex",
       gap: 5,
       padding: 5,
-      backgroundColor: "lightgray",
+      alignItems: "center",
     }}
   >
     {children}
   </div>
 );
 
-const SelectPost = () => (
-  <Row>
-    <Suspense>
-      <SelectPostButton postId={1} />
-      <SelectPostButton postId={2} />
-      <SelectPostButton postId={3} />
-      <SelectPostButton postId={4} />
-    </Suspense>
-  </Row>
-);
-
-const SelectPostButton = ({ postId }: { postId: number }) => {
+const SelectPost = () => {
   const selectedPostId = useSelectedPostId();
+  const hasPostError = useHasPostError();
   return (
-    <button
-      value={postId}
-      disabled={selectedPostId === postId}
-      onClick={() => selectedPostId$.next(postId)}
-    >
-      {postId}
-    </button>
+    <Row style={{ backgroundColor: "lightgray" }}>
+      <Suspense>
+        <SelectPostButton
+          postId={1}
+          disabled={selectedPostId === 1 || hasPostError}
+        />
+        <SelectPostButton
+          postId={2}
+          disabled={selectedPostId === 2 || hasPostError}
+        />
+        <SelectPostButton
+          postId={3}
+          disabled={selectedPostId === 3 || hasPostError}
+        />
+        <SelectPostButton
+          postId={4}
+          disabled={selectedPostId === 4 || hasPostError}
+        />
+      </Suspense>
+    </Row>
   );
 };
 
-const InvalidPostId = () => (
-  <div
-    style={{ padding: 20, margin: 10, border: "1px solid red", color: "red" }}
-  >
-    Invalid post ID
-  </div>
+const SelectPostButton = memo(
+  ({ postId, disabled }: { postId: number; disabled: boolean }) => {
+    return (
+      <button
+        value={postId}
+        disabled={disabled}
+        onClick={() => selectedPostId$.next(postId)}
+      >
+        {postId}
+      </button>
+    );
+  }
+);
+
+const InvalidPostId = (props: FallbackProps) => {
+  const message =
+    props.error instanceof Error ? props.error.message : "An error occurred";
+  return (
+    <div
+      style={{ padding: 20, margin: 10, border: "1px solid red", color: "red" }}
+    >
+      <Row>
+        {message}
+        <button onClick={props.resetErrorBoundary}>Reset</button>
+      </Row>
+    </div>
+  );
+};
+
+const Controls = () => (
+  <Suspense fallback={<div>Loading...</div>}>
+    <SelectPost />
+  </Suspense>
+);
+
+const Post = () => (
+  <Suspense fallback={<div>Loading...</div>}>
+    <ErrorBoundary
+      FallbackComponent={InvalidPostId}
+      onReset={() => {
+        hasPostError$.next(false);
+        selectedPostId$.next(1);
+      }}
+      onError={() => hasPostError$.next(true)}
+    >
+      <LoadPost />
+    </ErrorBoundary>
+  </Suspense>
 );
 
 const App = () => {
   return (
     <div>
-      <Suspense fallback={<div>Loading...</div>}>
-        <SelectPost />
-      </Suspense>
-
-      <ErrorBoundary FallbackComponent={InvalidPostId}>
-        <Suspense fallback={<div>Loading...</div>}>
-          <Post />
-        </Suspense>
-      </ErrorBoundary>
+      <h1>Example 10</h1>
+      <Controls />
+      <Post />
     </div>
   );
 };
