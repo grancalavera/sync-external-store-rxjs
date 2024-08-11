@@ -1,6 +1,5 @@
 import { useSyncExternalStore } from "react";
 import {
-  dematerialize,
   firstValueFrom,
   Observable,
   ObservableNotification,
@@ -13,14 +12,43 @@ type Pending = { kind: "pending" };
 type Success<T> = { kind: "success"; value: T };
 type Failure = { kind: "failure"; error: unknown };
 
+function resubscribeOnComplete<T>() {
+  return (source$: Observable<T>): Observable<T> =>
+    new Observable<T>((observer) => {
+      const outerSubscription = new Subscription();
+
+      const subscribeToSource = () => {
+        const innerSubscription = source$.subscribe({
+          next(value: T) {
+            observer.next(value);
+          },
+          error(error) {
+            observer.error(error);
+          },
+          complete() {
+            subscribeToSource();
+          },
+        });
+
+        outerSubscription.add(innerSubscription);
+      };
+
+      subscribeToSource();
+
+      return () => {
+        outerSubscription.unsubscribe();
+      };
+    });
+}
+
 function materializeAndRetry<T>(maxRetries = 1) {
   return (source$: Observable<T>): Observable<ObservableNotification<T>> =>
     new Observable<ObservableNotification<T>>((observer) => {
-      const subscription = new Subscription();
+      const outerSubscription = new Subscription();
       let retryCount = 0;
 
       const subscribeToSource = () => {
-        const sub = source$.subscribe({
+        const innerSubscription = source$.subscribe({
           next(value: T) {
             retryCount = 0;
             observer.next({ kind: "N", value });
@@ -40,16 +68,24 @@ function materializeAndRetry<T>(maxRetries = 1) {
             observer.complete();
           },
         });
-        subscription.add(sub);
+
+        outerSubscription.add(innerSubscription);
       };
 
       subscribeToSource();
 
       return () => {
-        subscription.unsubscribe();
+        outerSubscription.unsubscribe();
       };
     });
 }
+
+// this probably doesn't have parity with react-rxjs
+const state = <T>(source$: Observable<T>) =>
+  source$.pipe(
+    resubscribeOnComplete(),
+    shareReplay({ bufferSize: 1, refCount: true })
+  );
 
 // https://react.dev/reference/react/useSyncExternalStore
 export const createObservableStore = <T>(
@@ -57,10 +93,8 @@ export const createObservableStore = <T>(
 ): [() => T, Observable<T>] => {
   const notifiers = new Set<() => void>();
 
-  const sharedSource$ = source$.pipe(
-    materializeAndRetry(),
-    shareReplay({ bufferSize: 1, refCount: true })
-  );
+  const state$ = state(source$);
+  const materializedState$ = state$.pipe(materializeAndRetry());
 
   let promise: Promise<void> | undefined;
   let result: Result<T> = { kind: "pending" };
@@ -70,7 +104,7 @@ export const createObservableStore = <T>(
     if (!promise) {
       result = { kind: "pending" };
 
-      promise = firstValueFrom(sharedSource$).then((res) => {
+      promise = firstValueFrom(materializedState$).then((res) => {
         if (res.kind === "N") {
           result = { kind: "success", value: res.value };
         }
@@ -97,7 +131,7 @@ export const createObservableStore = <T>(
     notifiers.add(notifier);
 
     if (subscription === undefined) {
-      subscription = sharedSource$.subscribe({
+      subscription = materializedState$.subscribe({
         next: (value) => {
           if (value.kind === "N") {
             result = { kind: "success", value: value.value };
@@ -122,8 +156,5 @@ export const createObservableStore = <T>(
     };
   };
 
-  return [
-    () => useSyncExternalStore(subscribe, getSnapshot),
-    sharedSource$.pipe(dematerialize()),
-  ];
+  return [() => useSyncExternalStore(subscribe, getSnapshot), state$];
 };
