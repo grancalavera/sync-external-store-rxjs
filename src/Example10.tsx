@@ -3,6 +3,7 @@ import { ErrorBoundary, FallbackProps } from "react-error-boundary";
 import { BehaviorSubject, combineLatest, finalize, map, switchMap } from "rxjs";
 import { fromFetch } from "rxjs/fetch";
 import { createObservableStore } from "./observable-store-v3";
+import { Capture } from "./observable-store-capture-v3";
 
 type BlogPost = {
   userId: number;
@@ -182,18 +183,22 @@ const App = () => {
   return (
     <div>
       <h1>Example 10</h1>
-      <Controls />
+      <Capture>
+        <Controls />
+      </Capture>
       <InvalidPostErrorBoundary>
-        <Suspense
-          fallback={
-            <Card>
-              <h2>Loading...</h2>
-            </Card>
-          }
-        >
-          <Post />
-          <Status />
-        </Suspense>
+        <Capture>
+          <Suspense
+            fallback={
+              <Card>
+                <h2>Loading...</h2>
+              </Card>
+            }
+          >
+            <Post />
+            <Status />
+          </Suspense>
+        </Capture>
       </InvalidPostErrorBoundary>
     </div>
   );

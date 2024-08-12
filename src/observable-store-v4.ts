@@ -1,13 +1,12 @@
 import { useContext, useSyncExternalStore } from "react";
 import {
-  firstValueFrom,
   Observable,
   ObservableNotification,
   shareReplay,
   Subscription,
 } from "rxjs";
-import { createSuspender } from "./suspender-v2";
 import { CaptureContext } from "./observable-store-capture-v3";
+import { createSuspender } from "./suspender-v2";
 
 type Result<T> = Pending | Success<T> | Failure;
 type Pending = { kind: "pending" };
@@ -140,6 +139,7 @@ export const createObservableStore = <T>(
   const materializedState$ = state$.pipe(materializeAndRetry());
   const suspender = createSuspender(materializedState$);
 
+  // we'll remove this later when we figure out how to tell if we need to suspend again
   let promise: Promise<void> | undefined;
   let result: Result<T> = { kind: "pending" };
   let subscription: Subscription | undefined;
@@ -150,9 +150,9 @@ export const createObservableStore = <T>(
   const getSnapshot = () => {
     if (!promise) {
       result = { kind: "pending" };
-      console.log(capture, suspender);
+      const [p, s] = suspender.suspend();
 
-      promise = firstValueFrom(materializedState$).then((res) => {
+      promise = p.then((res) => {
         if (res.kind === "N") {
           result = { kind: "success", value: res.value };
         }
@@ -161,6 +161,14 @@ export const createObservableStore = <T>(
           result = { kind: "failure", error: res.error };
         }
       });
+
+      capture?.(
+        // here I MUST know which observable will be subscribed when calling `s`
+        // if I make a mistake here I'll index on the wrong observable, it would
+        // be much better if this indexing was done by Suspender.
+        materializedState$,
+        s
+      );
     }
 
     if (result.kind === "pending") {
