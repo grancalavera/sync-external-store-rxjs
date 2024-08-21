@@ -8,36 +8,17 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { defer, finalize, Observable, shareReplay, Subscription } from "rxjs";
+import {
+  defer,
+  finalize,
+  Observable,
+  shareReplay,
+  startWith,
+  Subject,
+  Subscription,
+  switchMap,
+} from "rxjs";
 import { fromFetch } from "rxjs/fetch";
-
-function Example() {
-  const [show, setShow] = useState(false);
-  return (
-    <Stack>
-      <h1>Example 15</h1>
-      <Card variant="dark">
-        <Stack>
-          <button
-            style={{ flex: 1 }}
-            onClick={() => setShow((current) => !current)}
-          >
-            {show ? "hide" : "show"}
-          </button>
-          {show && (
-            <TrapBoundary>
-              <Suspense fallback={<p>loading...</p>}>
-                <Posts />
-              </Suspense>
-            </TrapBoundary>
-          )}
-        </Stack>
-      </Card>
-    </Stack>
-  );
-}
-
-export default Example;
 
 // TODO: materialize source
 // TODO: handle errors
@@ -71,14 +52,14 @@ const isValue = <T,>(value: CurrentValue<T>): value is T => !isEmpty(value);
 //
 // -----------------------------------------------------------------------------
 
-type Trapped<T> = {
-  getSuspender: () => Promise<T>;
-  getCurrentValue: () => CurrentValue<T>;
+type Trap = {
+  capture: <T>(source$: Observable<T>) => Trapped<T>;
   subscribe: () => Subscription;
 };
 
-type Trap = {
-  capture: <T>(source$: Observable<T>) => Trapped<T>;
+type Trapped<T> = {
+  getSuspender: () => Promise<T>;
+  getCurrentValue: () => CurrentValue<T>;
   subscribe: () => Subscription;
 };
 
@@ -98,7 +79,6 @@ const createTrapped = <T,>(source$: Observable<T>): Trapped<T> => {
     // handle un-subscription on next
     // handle empty elements error
     // track error in Trapped<T> ?
-    // also this must be broken
     return source$
       .pipe(finalize(() => console.log("trapped: finalize")))
       .subscribe({
@@ -151,10 +131,10 @@ const createTrap = (): Trap => {
 
 const defaultTrap: Trap = {
   capture: () => {
-    throw new ReferenceError("capture: missing TrapContext");
+    throw new ReferenceError("Missing TrapContext");
   },
   subscribe: () => {
-    throw new ReferenceError("subscribe: missing TrapContext");
+    throw new ReferenceError("Missing TrapContext");
   },
 };
 
@@ -168,7 +148,6 @@ const TrapContext = createContext<Trap>(defaultTrap);
 
 const TrapBoundary = ({ children }: PropsWithChildren) => {
   const trap = useRef<Trap | undefined>(undefined);
-
   if (!trap.current) {
     trap.current = createTrap();
   }
@@ -198,9 +177,7 @@ const createObservableStore = <T,>(source$: Observable<T>) => {
 
   const sharedSource$ = source$.pipe(
     // maybe this is not needed at all?
-    // it is in a way, but needs to be paired with
-    //  a way to prevent the source from completing
-    shareReplay({ bufferSize: 1, refCount: true }),
+    // shareReplay({ bufferSize: 1, refCount: true }),
     finalize(() => console.log("sharedSource$: finalize"))
   );
 
@@ -243,17 +220,12 @@ const createObservableStore = <T,>(source$: Observable<T>) => {
         },
         complete: () => {
           // should not complete
-          // but there's the problem presented with observables like the one
-          // returned by `fromFetch` that complete after the first emission
-          // and where re-subscribing will make them fall into an infinite loop
-          // emitting over and over again
         },
       });
     }
     return () => {
       console.count("store: unsubscribe");
       subscription?.unsubscribe();
-      subscription = undefined;
       currentValue = EMPTY_VALUE;
     };
   };
@@ -293,6 +265,40 @@ const posts$: Observable<BlogPost[]> = defer(() => {
 
 const usePosts = createObservableStore(posts$);
 
+// -------------------------------------
+//
+// One Post
+//
+// -------------------------------------
+
+const selectPost$ = new Subject<number>();
+
+const selectedPostId$ = selectPost$.pipe(
+  startWith(1),
+  shareReplay({ bufferSize: 1, refCount: true })
+);
+
+const onePost$ = (id: number): Observable<BlogPost> =>
+  defer(() => {
+    console.log("onePost$: subscribe", { id });
+    return fromFetch(`https://jsonplaceholder.typicode.com/posts/${id}`, {
+      selector: (response) => response.json(),
+    }).pipe(finalize(() => console.count("onePost$: finalize")));
+  });
+
+const selectedPost$ = selectedPostId$.pipe(
+  switchMap((id) => onePost$(id)),
+  shareReplay({ bufferSize: 1, refCount: true })
+);
+
+const useSelectedPost = createObservableStore(selectedPost$);
+
+const useSelectPostId = createObservableStore(selectedPostId$);
+
+selectedPostId$.subscribe((id) => {
+  console.log("[here] selectedPostId$", id);
+});
+
 // -----------------------------------------------------------------------------
 //
 // Example
@@ -309,6 +315,10 @@ const Stack = ({ children }: PropsWithChildren) => (
   >
     {children}
   </div>
+);
+
+const Row = ({ children }: PropsWithChildren) => (
+  <div style={{ display: "flex", gap: 5 }}>{children}</div>
 );
 
 const Posts = () => {
@@ -333,6 +343,34 @@ const Post = ({ post }: { post: BlogPost }) => {
   );
 };
 
+const SelectedPost = () => {
+  const post = useSelectedPost();
+  return <Post post={post} />;
+};
+
+const SelectPost = (props: { id: number }) => {
+  const selectedPostId = useSelectPostId();
+  console.log("SelectPost", { propsId: props.id, selectedPostId });
+  return (
+    <button
+      onClick={() => selectPost$.next(props.id)}
+      disabled={selectedPostId === props.id}
+    >
+      {props.id}
+    </button>
+  );
+};
+
+const Menu = () => {
+  return (
+    <Row>
+      <SelectPost id={1} />
+      <SelectPost id={2} />
+      <SelectPost id={3} />
+    </Row>
+  );
+};
+
 const Card = ({
   children,
   variant,
@@ -347,3 +385,44 @@ const Card = ({
     {children}
   </div>
 );
+
+function Example() {
+  const [show, setShow] = useState(false);
+  return (
+    <Stack>
+      <h1>Example 15</h1>
+      <Card variant="dark">
+        <Stack>
+          <TrapBoundary>
+            <Suspense fallback={<p>loading...</p>}>
+              <Menu />
+            </Suspense>
+            <Suspense fallback={<p>loading...</p>}>
+              <SelectedPost />
+            </Suspense>
+          </TrapBoundary>
+        </Stack>
+      </Card>
+
+      <Card variant="dark">
+        <Stack>
+          <button
+            style={{ flex: 1 }}
+            onClick={() => setShow((current) => !current)}
+          >
+            {show ? "hide" : "show"}
+          </button>
+          {show && (
+            <TrapBoundary>
+              <Suspense fallback={<p>loading...</p>}>
+                <Posts />
+              </Suspense>
+            </TrapBoundary>
+          )}
+        </Stack>
+      </Card>
+    </Stack>
+  );
+}
+
+export default Example;
