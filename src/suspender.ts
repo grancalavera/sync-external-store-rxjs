@@ -1,4 +1,4 @@
-type Suspender = {
+export type Suspender = {
   suspend: () => Promise<void>;
   resume: () => void;
   isSuspended: () => boolean;
@@ -12,7 +12,7 @@ export const createSuspender = (): Suspender => {
     if (promise === undefined) {
       promise = new Promise((res) => (resolve = res));
     }
-    throw promise;
+    return promise;
   };
 
   const resume = () => {

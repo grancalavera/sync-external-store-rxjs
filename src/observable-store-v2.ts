@@ -1,6 +1,10 @@
-import { Observable, Subscription } from "rxjs";
+import { Observable, shareReplay, Subscription } from "rxjs";
 import { createSuspender } from "./suspender";
 
+export type ObservableStore<T> = {
+  getSnapshot: () => T;
+  subscribe: (notifier: Notifier) => () => void;
+};
 type Notifier = () => void;
 type State<T> = HasError | Empty | HasValue<T>;
 type HasError = { kind: "error"; error: unknown };
@@ -38,10 +42,18 @@ type HasValue<T> = { kind: "value"; value: T };
   - in the end [...] there is an open subscription without any component referencing it
 */
 
-export const createObservableStore = <T>(source$: Observable<T>) => {
+export const createObservableStore = <T>(
+  source$: Observable<T>,
+  capture: (subscription: Subscription) => void
+): ObservableStore<T> => {
   let state: State<T> = { kind: "empty" };
-  let subscription: Subscription | undefined;
 
+  let suspendedSubscription: Subscription | undefined;
+  let retainedSubscription: Subscription | undefined;
+
+  const multicastSource$ = source$.pipe(
+    shareReplay({ bufferSize: 1, refCount: true })
+  );
   const subscribers = new Set<Notifier>();
   const suspender = createSuspender();
 
@@ -53,10 +65,24 @@ export const createObservableStore = <T>(source$: Observable<T>) => {
     state = { kind: "error", error };
   };
 
+  const reset = () => {
+    state = { kind: "empty" };
+  };
+
   const getSnapshot = (): T => {
-    retainSubscription();
+    console.log("** getSnapshot at", Date.now());
 
     if (state.kind === "empty") {
+      suspendedSubscription = multicastSource$.subscribe({
+        next: (value) => {
+          set(value);
+          suspender.resume();
+        },
+        error: (error) => {
+          fail(error);
+        },
+      });
+      capture(suspendedSubscription);
       throw suspender.suspend();
     }
 
@@ -69,6 +95,8 @@ export const createObservableStore = <T>(source$: Observable<T>) => {
 
   const subscribe = (notifier: Notifier) => {
     retainSubscription();
+    suspendedSubscription?.unsubscribe();
+    suspendedSubscription = undefined;
     subscribers.add(notifier);
     return () => {
       subscribers.delete(notifier);
@@ -77,19 +105,10 @@ export const createObservableStore = <T>(source$: Observable<T>) => {
   };
 
   const retainSubscription = () => {
-    if (subscription === undefined && subscribers.size === 0) {
-      subscription = source$.subscribe({
+    if (retainedSubscription === undefined && subscribers.size === 0) {
+      retainedSubscription = multicastSource$.subscribe({
         next: (value) => {
           set(value);
-          if (suspender.isSuspended()) {
-            suspender.resume();
-          }
-
-          if (subscribers.size === 0) {
-            releaseSubscription();
-            return;
-          }
-
           subscribers.forEach((notify) => notify());
         },
         error: (error) => {
@@ -101,9 +120,11 @@ export const createObservableStore = <T>(source$: Observable<T>) => {
   };
 
   const releaseSubscription = () => {
-    if (subscription && subscribers.size === 0) {
-      subscription.unsubscribe();
-      subscription = undefined;
+    console.log("** releaseSubscription", Date.now());
+    if (retainedSubscription && subscribers.size === 0) {
+      retainedSubscription.unsubscribe();
+      retainedSubscription = undefined;
+      reset();
     }
   };
 
